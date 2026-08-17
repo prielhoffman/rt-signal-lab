@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "dac.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -88,10 +89,19 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
+  MX_DAC1_Init();
   /* USER CODE BEGIN 2 */
   static const uint8_t boot_message[] = "rt-signal-lab: boot OK\r\n";
 
   if (HAL_UART_Transmit(&huart2, boot_message, sizeof(boot_message) - 1U, 100U) != HAL_OK){
+    Error_Handler();
+  }
+
+  if (HAL_DAC_Start(&hdac1, DAC_CHANNEL_1) != HAL_OK){
+    Error_Handler();
+  }
+
+  if (HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 2048U) != HAL_OK){
     Error_Handler();
   }
   /* USER CODE END 2 */
