@@ -18,13 +18,14 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
 #include "dac.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,7 +46,9 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+static uint32_t adc_raw = 0U;
+static uint32_t adc_mv = 0U;
+static char uart_tx_buffer[64];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -90,7 +93,12 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   MX_DAC1_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
+  if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK){
+    Error_Handler();
+  }
+
   static const uint8_t boot_message[] = "rt-signal-lab: boot OK\r\n";
 
   if (HAL_UART_Transmit(&huart2, boot_message, sizeof(boot_message) - 1U, 100U) != HAL_OK){
@@ -110,6 +118,35 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  if (HAL_ADC_Start(&hadc1) != HAL_OK){
+	    Error_Handler();
+	  }
+
+	  if (HAL_ADC_PollForConversion(&hadc1, 10U) != HAL_OK){
+	    Error_Handler();
+	  }
+
+	  adc_raw = HAL_ADC_GetValue(&hadc1);
+
+	  if (HAL_ADC_Stop(&hadc1) != HAL_OK){
+	    Error_Handler();
+	  }
+
+	  adc_mv = (adc_raw * 3300U) / 4095U;
+
+	  int uart_tx_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "ADC raw: %lu, voltage: %lu mV\r\n", (unsigned long)adc_raw, (unsigned long)adc_mv);
+
+	  if (uart_tx_length > 0){
+	    if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)uart_tx_length, 100U) != HAL_OK){
+	      Error_Handler();
+	    }
+	  }
+	  else
+	  {
+	    Error_Handler();
+	  }
+
+	  HAL_Delay(500U);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
