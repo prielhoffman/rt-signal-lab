@@ -37,8 +37,14 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ADC_BUFFER_LENGTH 10U
-#define ADC_HALF_LENGTH   (ADC_BUFFER_LENGTH / 2U)
+#define ADC_BUFFER_LENGTH         10U
+#define ADC_HALF_LENGTH           (ADC_BUFFER_LENGTH / 2U)
+#define SAMPLE_RATE_HZ            10U
+#define HALF_BUFFER_DEADLINE_MS ((ADC_HALF_LENGTH * 1000U) / SAMPLE_RATE_HZ)
+
+#define PROCESSING_NONE           0U
+#define PROCESSING_FIRST_HALF     1U
+#define PROCESSING_SECOND_HALF    2U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -50,45 +56,76 @@
 
 /* USER CODE BEGIN PV */
 static uint16_t adc_buffer[ADC_BUFFER_LENGTH];
+
 static volatile uint8_t adc_first_half_ready = 0U;
 static volatile uint8_t adc_second_half_ready = 0U;
+static volatile uint8_t adc_processing_half = PROCESSING_NONE;
+static volatile uint32_t buffer_overrun_count = 0U;
+
 static uint32_t processed_half_count = 0U;
-static char uart_tx_buffer[64];
+static uint32_t last_processing_time_ms = 0U;
+static uint32_t max_processing_time_ms = 0U;
+static uint32_t deadline_miss_count = 0U;
+
+static char uart_tx_buffer[128];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
+static void ProcessAdcHalf(uint32_t start_index, uint8_t half_id);
 /* USER CODE END PFP */
-static void ProcessAdcHalf(uint32_t start_index);
+
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static void ProcessAdcHalf(uint32_t start_index){
-  processed_half_count++;
+static void ProcessAdcHalf(uint32_t start_index, uint8_t half_id){
+	adc_processing_half = half_id;
+	uint32_t processing_start_ms = HAL_GetTick();
 
-  int header_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "\r\nhalf-block %lu, buffer[%lu..%lu]:\r\n",
+	processed_half_count++;
+
+	int header_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "\r\nhalf-block %lu, buffer[%lu..%lu]:\r\n",
       (unsigned long)processed_half_count, (unsigned long)start_index, (unsigned long)(start_index + ADC_HALF_LENGTH - 1U));
 
-  if ((header_length > 0) && (header_length < (int)sizeof(uart_tx_buffer))){
-    if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)header_length, 100U) != HAL_OK){
-      Error_Handler();
+	if ((header_length > 0) && (header_length < (int)sizeof(uart_tx_buffer))){
+		if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)header_length, 100U) != HAL_OK){
+			Error_Handler();
     }
   }
 
-  for (uint32_t offset = 0U; offset < ADC_HALF_LENGTH; offset++){
-    uint32_t index = start_index + offset;
-    uint32_t voltage_mv = ((uint32_t)adc_buffer[index] * 3300U) / 4095U;
+	for (uint32_t offset = 0U; offset < ADC_HALF_LENGTH; offset++){
+		uint32_t index = start_index + offset;
+		uint32_t voltage_mv = ((uint32_t)adc_buffer[index] * 3300U) / 4095U;
 
-    int uart_tx_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "sample[%lu]: raw=%u, voltage=%lu mV\r\n",
+    	int uart_tx_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "sample[%lu]: raw=%u, voltage=%lu mV\r\n",
         (unsigned long)index, (unsigned int)adc_buffer[index], (unsigned long)voltage_mv);
 
-    if ((uart_tx_length > 0) && (uart_tx_length < (int)sizeof(uart_tx_buffer))){
-      if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)uart_tx_length, 100U) != HAL_OK){
-        Error_Handler();
+    	if ((uart_tx_length > 0) && (uart_tx_length < (int)sizeof(uart_tx_buffer))){
+    		if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)uart_tx_length, 100U) != HAL_OK){
+    			Error_Handler();
       }
     }
   }
+	last_processing_time_ms = HAL_GetTick() - processing_start_ms;
+
+	if (last_processing_time_ms > max_processing_time_ms){
+	  max_processing_time_ms = last_processing_time_ms;
+	}
+
+	if (last_processing_time_ms >= HALF_BUFFER_DEADLINE_MS){
+	  deadline_miss_count++;
+	}
+
+	adc_processing_half = PROCESSING_NONE;
+
+	int status_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "time=%lu ms, max=%lu ms, deadline=%lu ms, " "overruns=%lu, misses=%lu\r\n",
+	    (unsigned long)last_processing_time_ms, (unsigned long)max_processing_time_ms, (unsigned long)HALF_BUFFER_DEADLINE_MS, (unsigned long)buffer_overrun_count, (unsigned long)deadline_miss_count);
+
+	if ((status_length > 0) && (status_length < (int)sizeof(uart_tx_buffer))){
+	  if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)status_length, 100U) != HAL_OK){
+	    Error_Handler();
+	  }
+	}
 }
 /* USER CODE END 0 */
 
@@ -160,12 +197,12 @@ int main(void)
   {
 	  if (adc_first_half_ready != 0U){
 	    adc_first_half_ready = 0U;
-	    ProcessAdcHalf(0U);
+	    ProcessAdcHalf(0U, PROCESSING_FIRST_HALF);
 	  }
 
 	  if (adc_second_half_ready != 0U){
 	    adc_second_half_ready = 0U;
-	    ProcessAdcHalf(ADC_HALF_LENGTH);
+	    ProcessAdcHalf(ADC_HALF_LENGTH, PROCESSING_SECOND_HALF);
 	  }
     /* USER CODE END WHILE */
 
@@ -223,12 +260,20 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc){
   if (hadc->Instance == ADC1){
+    if ((adc_first_half_ready != 0U) || (adc_processing_half == PROCESSING_FIRST_HALF)){
+      buffer_overrun_count++;
+    }
+
     adc_first_half_ready = 1U;
   }
 }
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc){
   if (hadc->Instance == ADC1){
+    if ((adc_second_half_ready != 0U) || (adc_processing_half == PROCESSING_SECOND_HALF)){
+      buffer_overrun_count++;
+    }
+
     adc_second_half_ready = 1U;
   }
 }
