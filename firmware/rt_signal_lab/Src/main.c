@@ -20,6 +20,7 @@
 #include "main.h"
 #include "adc.h"
 #include "dac.h"
+#include "dma.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -36,7 +37,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define ADC_BUFFER_LENGTH 10U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -47,10 +48,9 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-static uint32_t adc_raw = 0U;
-static uint32_t adc_mv = 0U;
+static uint16_t adc_buffer[ADC_BUFFER_LENGTH];
+static volatile uint8_t adc_buffer_ready = 0U;
 static char uart_tx_buffer[64];
-static uint32_t sample_time_ms = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -93,6 +93,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_DAC1_Init();
   MX_ADC1_Init();
@@ -116,7 +117,7 @@ int main(void)
     Error_Handler();
   }
 
-  if (HAL_ADC_Start(&hadc1) != HAL_OK){
+  if (HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buffer, ADC_BUFFER_LENGTH) != HAL_OK){
     Error_Handler();
   }
 
@@ -129,22 +130,31 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  if (HAL_ADC_PollForConversion(&hadc1, 200U) != HAL_OK){
-	    Error_Handler();
-	  }
+	  if (adc_buffer_ready != 0U){
+	    adc_buffer_ready = 0U;
 
-	  adc_raw = HAL_ADC_GetValue(&hadc1);
-	  sample_time_ms = HAL_GetTick();
-
-	  adc_mv = (adc_raw * 3300U) / 4095U;
-
-	  int uart_tx_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "t=%lu ms, ADC raw: %lu, voltage: %lu mV\r\n",
-	      (unsigned long)sample_time_ms, (unsigned long)adc_raw, (unsigned long)adc_mv);
-
-	  if ((uart_tx_length > 0) && (uart_tx_length < (int)sizeof(uart_tx_buffer))){
-	    if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)uart_tx_length, 100U) != HAL_OK)
-	    {
+	    if (HAL_TIM_Base_Stop(&htim6) != HAL_OK){
 	      Error_Handler();
+	    }
+
+	    static const uint8_t complete_message[] = "DMA buffer complete:\r\n";
+
+	    if (HAL_UART_Transmit(&huart2, complete_message, sizeof(complete_message) - 1U, 100U) != HAL_OK){
+	      Error_Handler();
+	    }
+
+	    for (uint32_t i = 0U; i < ADC_BUFFER_LENGTH; i++){
+	      uint32_t voltage_mv = ((uint32_t)adc_buffer[i] * 3300U) / 4095U;
+
+	      int uart_tx_length = snprintf( uart_tx_buffer, sizeof(uart_tx_buffer), "sample[%lu]: raw=%u, voltage=%lu mV\r\n",
+	          (unsigned long)i, (unsigned int)adc_buffer[i], (unsigned long)voltage_mv);
+
+	      if ((uart_tx_length > 0) && (uart_tx_length < (int)sizeof(uart_tx_buffer))){
+	        if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)uart_tx_length, 100U) != HAL_OK)
+	        {
+	          Error_Handler();
+	        }
+	      }
 	    }
 	  }
     /* USER CODE END WHILE */
@@ -201,7 +211,11 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc){
+  if (hadc->Instance == ADC1){
+    adc_buffer_ready = 1U;
+  }
+}
 /* USER CODE END 4 */
 
 /**
