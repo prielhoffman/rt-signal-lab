@@ -46,6 +46,11 @@
 #define PROCESSING_NONE           0U
 #define PROCESSING_FIRST_HALF     1U
 #define PROCESSING_SECOND_HALF    2U
+
+#define DAC_TABLE_LENGTH    200U
+#define DAC_MIDPOINT        2048.0f
+#define DAC_AMPLITUDE       1800.0f
+#define TWO_PI              6.28318530718f
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -69,12 +74,15 @@ static uint32_t max_processing_time_ms = 0U;
 static uint32_t deadline_miss_count = 0U;
 
 static char uart_tx_buffer[128];
+
+static uint16_t dac_waveform[DAC_TABLE_LENGTH];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static void ProcessAdcHalf(uint32_t start_index, uint8_t half_id);
+static void GenerateSineWave(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -167,6 +175,17 @@ static void ProcessAdcHalf(uint32_t start_index, uint8_t half_id){
 	  }
 	}
 }
+
+static void GenerateSineWave(void)
+{
+  for (uint32_t index = 0U; index < DAC_TABLE_LENGTH; index++){
+    float phase = (TWO_PI * (float)index) / (float)DAC_TABLE_LENGTH;
+
+    float sample = DAC_MIDPOINT + (DAC_AMPLITUDE * sinf(phase));
+
+    dac_waveform[index] = (uint16_t)(sample + 0.5f);
+  }
+}
 /* USER CODE END 0 */
 
 /**
@@ -203,6 +222,7 @@ int main(void)
   MX_DAC1_Init();
   MX_ADC1_Init();
   MX_TIM6_Init();
+  MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK){
     Error_Handler();
@@ -214,11 +234,13 @@ int main(void)
     Error_Handler();
   }
 
-  if (HAL_DAC_Start(&hdac1, DAC_CHANNEL_1) != HAL_OK){
+  GenerateSineWave();
+
+  if (HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)dac_waveform, DAC_TABLE_LENGTH, DAC_ALIGN_12B_R) != HAL_OK){
     Error_Handler();
   }
 
-  if (HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 2048U) != HAL_OK){
+  if (HAL_TIM_Base_Start(&htim7) != HAL_OK){
     Error_Handler();
   }
 
