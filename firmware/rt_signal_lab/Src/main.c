@@ -52,6 +52,8 @@
 #define DAC_MIDPOINT        2048.0f
 #define DAC_AMPLITUDE       1800.0f
 #define TWO_PI              6.28318530718f
+
+#define MIDPOINT_THRESHOLD_RAW  2048U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -77,6 +79,15 @@ static uint32_t deadline_miss_count = 0U;
 static char uart_tx_buffer[128];
 
 static uint16_t dac_waveform[DAC_TABLE_LENGTH];
+
+static uint16_t previous_sample_raw = 0U;
+static uint8_t previous_sample_valid = 0U;
+static uint8_t first_crossing_found = 0U;
+
+static uint32_t total_sample_count = 0U;
+static uint32_t previous_crossing_sample = 0U;
+static uint32_t measured_period_samples = 0U;
+static uint32_t measured_frequency_millihz = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -84,6 +95,7 @@ void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
 static void ProcessAdcHalf(uint32_t start_index, uint8_t half_id);
 static void GenerateSineWave(void);
+static void UpdateFrequencyEstimate(uint16_t sample_raw);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -99,6 +111,8 @@ static void ProcessAdcHalf(uint32_t start_index, uint8_t half_id){
 
   for (uint32_t offset = 0U; offset < ADC_HALF_LENGTH; offset++){
     uint16_t sample_raw = adc_buffer[start_index + offset];
+
+    UpdateFrequencyEstimate(sample_raw);
 
     if (sample_raw < min_raw){
       min_raw = sample_raw;
@@ -128,11 +142,10 @@ static void ProcessAdcHalf(uint32_t start_index, uint8_t half_id){
   uint32_t rms_mv = (rms_raw * 3300U) / 4095U;
 
   if ((processed_half_count % UART_REPORT_INTERVAL_BLOCKS) == 0U){
-    int uart_tx_length = snprintf(
-        uart_tx_buffer,
-        sizeof(uart_tx_buffer), "block=%lu: min=%lu, max=%lu, avg=%lu, " "p2p=%lu, rms=%lu mV, overruns=%lu, misses=%lu\r\n",
-        (unsigned long)processed_half_count, (unsigned long)min_mv, (unsigned long)max_mv, (unsigned long)average_mv, (unsigned long)peak_to_peak_mv,
-        (unsigned long)rms_mv, (unsigned long)buffer_overrun_count, (unsigned long)deadline_miss_count);
+	  int uart_tx_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "b=%lu min=%lu max=%lu avg=%lu p2p=%lu rms=%lu " "f=%lu.%03luHz period=%lu ov=%lu miss=%lu\r\n",
+	      (unsigned long)processed_half_count, (unsigned long)min_mv, (unsigned long)max_mv, (unsigned long)average_mv, (unsigned long)peak_to_peak_mv,
+	      (unsigned long)rms_mv, (unsigned long)(measured_frequency_millihz / 1000U), (unsigned long)(measured_frequency_millihz % 1000U),
+	      (unsigned long)measured_period_samples, (unsigned long)buffer_overrun_count, (unsigned long)deadline_miss_count);
 
     if ((uart_tx_length > 0) && (uart_tx_length < (int)sizeof(uart_tx_buffer))){
       if (HAL_UART_Transmit( &huart2, (uint8_t *)uart_tx_buffer, (uint16_t)uart_tx_length, 100U) != HAL_OK){
@@ -163,6 +176,29 @@ static void GenerateSineWave(void)
 
     dac_waveform[index] = (uint16_t)(sample + 0.5f);
   }
+}
+
+static void UpdateFrequencyEstimate(uint16_t sample_raw){
+  if (previous_sample_valid != 0U){
+    if ((previous_sample_raw < MIDPOINT_THRESHOLD_RAW) && (sample_raw >= MIDPOINT_THRESHOLD_RAW)){
+      if (first_crossing_found != 0U){
+        uint32_t period_samples = total_sample_count - previous_crossing_sample;
+
+        if (period_samples != 0U){
+          measured_period_samples = period_samples;
+
+          measured_frequency_millihz = ((SAMPLE_RATE_HZ * 1000U) + (period_samples / 2U)) / period_samples;
+        }
+      }
+
+      previous_crossing_sample = total_sample_count;
+      first_crossing_found = 1U;
+    }
+  }
+
+  previous_sample_raw = sample_raw;
+  previous_sample_valid = 1U;
+  total_sample_count++;
 }
 /* USER CODE END 0 */
 
