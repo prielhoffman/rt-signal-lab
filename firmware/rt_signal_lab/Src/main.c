@@ -51,6 +51,7 @@
 static uint16_t adc_buffer[ADC_BUFFER_LENGTH];
 static volatile uint8_t adc_buffer_ready = 0U;
 static char uart_tx_buffer[64];
+static uint32_t dma_block_count = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -133,14 +134,14 @@ int main(void)
 	  if (adc_buffer_ready != 0U){
 	    adc_buffer_ready = 0U;
 
-	    if (HAL_TIM_Base_Stop(&htim6) != HAL_OK){
-	      Error_Handler();
-	    }
+	    dma_block_count++;
 
-	    static const uint8_t complete_message[] = "DMA buffer complete:\r\n";
+	    int header_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "\r\nDMA block %lu complete:\r\n", (unsigned long)dma_block_count);
 
-	    if (HAL_UART_Transmit(&huart2, complete_message, sizeof(complete_message) - 1U, 100U) != HAL_OK){
-	      Error_Handler();
+	    if ((header_length > 0) && (header_length < (int)sizeof(uart_tx_buffer))){
+	      if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)header_length, 100U) != HAL_OK){
+	        Error_Handler();
+	      }
 	    }
 
 	    for (uint32_t i = 0U; i < ADC_BUFFER_LENGTH; i++){
