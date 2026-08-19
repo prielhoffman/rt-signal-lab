@@ -38,10 +38,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ADC_BUFFER_LENGTH         10U
-#define ADC_HALF_LENGTH           (ADC_BUFFER_LENGTH / 2U)
-#define SAMPLE_RATE_HZ            10U
-#define HALF_BUFFER_DEADLINE_MS ((ADC_HALF_LENGTH * 1000U) / SAMPLE_RATE_HZ)
+#define ADC_BUFFER_LENGTH          400U
+#define ADC_HALF_LENGTH            (ADC_BUFFER_LENGTH / 2U)
+#define SAMPLE_RATE_HZ             20000U
+#define HALF_BUFFER_DEADLINE_MS    ((ADC_HALF_LENGTH * 1000U) / SAMPLE_RATE_HZ)
+#define UART_REPORT_INTERVAL_BLOCKS 20U
 
 #define PROCESSING_NONE           0U
 #define PROCESSING_FIRST_HALF     1U
@@ -88,92 +89,69 @@ static void GenerateSineWave(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 static void ProcessAdcHalf(uint32_t start_index, uint8_t half_id){
-	adc_processing_half = half_id;
-	uint32_t processing_start_ms = HAL_GetTick();
+  adc_processing_half = half_id;
+  uint32_t processing_start_ms = HAL_GetTick();
 
-	uint16_t min_raw = adc_buffer[start_index];
-	uint16_t max_raw = adc_buffer[start_index];
-	uint32_t sum_raw = 0U;
-	uint64_t sum_squares_raw = 0U;
+  uint16_t min_raw = adc_buffer[start_index];
+  uint16_t max_raw = adc_buffer[start_index];
+  uint32_t sum_raw = 0U;
+  uint64_t sum_squares_raw = 0U;
 
-	processed_half_count++;
+  for (uint32_t offset = 0U; offset < ADC_HALF_LENGTH; offset++){
+    uint16_t sample_raw = adc_buffer[start_index + offset];
 
-	int header_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "\r\nhalf-block %lu, buffer[%lu..%lu]:\r\n",
-      (unsigned long)processed_half_count, (unsigned long)start_index, (unsigned long)(start_index + ADC_HALF_LENGTH - 1U));
-
-	if ((header_length > 0) && (header_length < (int)sizeof(uart_tx_buffer))){
-		if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)header_length, 100U) != HAL_OK){
-			Error_Handler();
+    if (sample_raw < min_raw){
+      min_raw = sample_raw;
     }
+
+    if (sample_raw > max_raw){
+      max_raw = sample_raw;
+    }
+
+    sum_raw += sample_raw;
+    sum_squares_raw += (uint64_t)sample_raw * sample_raw;
   }
 
-	for (uint32_t offset = 0U; offset < ADC_HALF_LENGTH; offset++){
-		uint32_t index = start_index + offset;
-		uint16_t sample_raw = adc_buffer[index];
+  processed_half_count++;
 
-		if (sample_raw < min_raw){
-		  min_raw = sample_raw;
-		}
+  uint32_t average_raw = sum_raw / ADC_HALF_LENGTH;
+  uint32_t peak_to_peak_raw = (uint32_t)max_raw - min_raw;
 
-		if (sample_raw > max_raw){
-		  max_raw = sample_raw;
-		}
+  double mean_square = (double)sum_squares_raw / (double)ADC_HALF_LENGTH;
 
-		sum_raw += sample_raw;
-		sum_squares_raw += (uint64_t)sample_raw * sample_raw;
-		uint32_t voltage_mv = ((uint32_t)sample_raw * 3300U) / 4095U;
+  uint32_t rms_raw = (uint32_t)(sqrt(mean_square) + 0.5);
 
-    	int uart_tx_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "sample[%lu]: raw=%u, voltage=%lu mV\r\n",
-        (unsigned long)index, (unsigned int)sample_raw, (unsigned long)voltage_mv);
+  uint32_t min_mv = ((uint32_t)min_raw * 3300U) / 4095U;
+  uint32_t max_mv = ((uint32_t)max_raw * 3300U) / 4095U;
+  uint32_t average_mv = (average_raw * 3300U) / 4095U;
+  uint32_t peak_to_peak_mv = (peak_to_peak_raw * 3300U) / 4095U;
+  uint32_t rms_mv = (rms_raw * 3300U) / 4095U;
 
-    	if ((uart_tx_length > 0) && (uart_tx_length < (int)sizeof(uart_tx_buffer))){
-    		if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)uart_tx_length, 100U) != HAL_OK){
-    			Error_Handler();
+  if ((processed_half_count % UART_REPORT_INTERVAL_BLOCKS) == 0U){
+    int uart_tx_length = snprintf(
+        uart_tx_buffer,
+        sizeof(uart_tx_buffer), "block=%lu: min=%lu, max=%lu, avg=%lu, " "p2p=%lu, rms=%lu mV, overruns=%lu, misses=%lu\r\n",
+        (unsigned long)processed_half_count, (unsigned long)min_mv, (unsigned long)max_mv, (unsigned long)average_mv, (unsigned long)peak_to_peak_mv,
+        (unsigned long)rms_mv, (unsigned long)buffer_overrun_count, (unsigned long)deadline_miss_count);
+
+    if ((uart_tx_length > 0) && (uart_tx_length < (int)sizeof(uart_tx_buffer))){
+      if (HAL_UART_Transmit( &huart2, (uint8_t *)uart_tx_buffer, (uint16_t)uart_tx_length, 100U) != HAL_OK){
+        Error_Handler();
       }
     }
   }
-	uint32_t average_raw = sum_raw / ADC_HALF_LENGTH;
-	uint32_t peak_to_peak_raw = (uint32_t)max_raw - min_raw;
 
-	double mean_square = (double)sum_squares_raw / (double)ADC_HALF_LENGTH;
+  last_processing_time_ms = HAL_GetTick() - processing_start_ms;
 
-	uint32_t rms_raw = (uint32_t)(sqrt(mean_square) + 0.5);
+  if (last_processing_time_ms > max_processing_time_ms){
+    max_processing_time_ms = last_processing_time_ms;
+  }
 
-	uint32_t min_mv = ((uint32_t)min_raw * 3300U) / 4095U;
-	uint32_t max_mv = ((uint32_t)max_raw * 3300U) / 4095U;
-	uint32_t average_mv = (average_raw * 3300U) / 4095U;
-	uint32_t peak_to_peak_mv = (peak_to_peak_raw * 3300U) / 4095U;
-	uint32_t rms_mv = (rms_raw * 3300U) / 4095U;
+  if (last_processing_time_ms >= HALF_BUFFER_DEADLINE_MS){
+    deadline_miss_count++;
+  }
 
-	int metrics_length = snprintf( uart_tx_buffer, sizeof(uart_tx_buffer), "metrics: min=%lu mV, max=%lu mV, avg=%lu mV, " "p2p=%lu mV, rms=%lu mV\r\n",
-	    (unsigned long)min_mv, (unsigned long)max_mv, (unsigned long)average_mv, (unsigned long)peak_to_peak_mv, (unsigned long)rms_mv);
-
-	if ((metrics_length > 0) && (metrics_length < (int)sizeof(uart_tx_buffer))){
-	  if (HAL_UART_Transmit( &huart2, (uint8_t *)uart_tx_buffer, (uint16_t)metrics_length, 100U) != HAL_OK){
-	    Error_Handler();
-	  }
-	}
-
-	last_processing_time_ms = HAL_GetTick() - processing_start_ms;
-
-	if (last_processing_time_ms > max_processing_time_ms){
-	  max_processing_time_ms = last_processing_time_ms;
-	}
-
-	if (last_processing_time_ms >= HALF_BUFFER_DEADLINE_MS){
-	  deadline_miss_count++;
-	}
-
-	adc_processing_half = PROCESSING_NONE;
-
-	int status_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "time=%lu ms, max=%lu ms, deadline=%lu ms, " "overruns=%lu, misses=%lu\r\n",
-	    (unsigned long)last_processing_time_ms, (unsigned long)max_processing_time_ms, (unsigned long)HALF_BUFFER_DEADLINE_MS, (unsigned long)buffer_overrun_count, (unsigned long)deadline_miss_count);
-
-	if ((status_length > 0) && (status_length < (int)sizeof(uart_tx_buffer))){
-	  if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)status_length, 100U) != HAL_OK){
-	    Error_Handler();
-	  }
-	}
+  adc_processing_half = PROCESSING_NONE;
 }
 
 static void GenerateSineWave(void)
@@ -222,7 +200,6 @@ int main(void)
   MX_DAC1_Init();
   MX_ADC1_Init();
   MX_TIM6_Init();
-  MX_TIM7_Init();
   /* USER CODE BEGIN 2 */
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK){
     Error_Handler();
@@ -237,10 +214,6 @@ int main(void)
   GenerateSineWave();
 
   if (HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)dac_waveform, DAC_TABLE_LENGTH, DAC_ALIGN_12B_R) != HAL_OK){
-    Error_Handler();
-  }
-
-  if (HAL_TIM_Base_Start(&htim7) != HAL_OK){
     Error_Handler();
   }
 
