@@ -28,6 +28,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -82,6 +83,11 @@ static void ProcessAdcHalf(uint32_t start_index, uint8_t half_id){
 	adc_processing_half = half_id;
 	uint32_t processing_start_ms = HAL_GetTick();
 
+	uint16_t min_raw = adc_buffer[start_index];
+	uint16_t max_raw = adc_buffer[start_index];
+	uint32_t sum_raw = 0U;
+	uint64_t sum_squares_raw = 0U;
+
 	processed_half_count++;
 
 	int header_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "\r\nhalf-block %lu, buffer[%lu..%lu]:\r\n",
@@ -95,10 +101,22 @@ static void ProcessAdcHalf(uint32_t start_index, uint8_t half_id){
 
 	for (uint32_t offset = 0U; offset < ADC_HALF_LENGTH; offset++){
 		uint32_t index = start_index + offset;
-		uint32_t voltage_mv = ((uint32_t)adc_buffer[index] * 3300U) / 4095U;
+		uint16_t sample_raw = adc_buffer[index];
+
+		if (sample_raw < min_raw){
+		  min_raw = sample_raw;
+		}
+
+		if (sample_raw > max_raw){
+		  max_raw = sample_raw;
+		}
+
+		sum_raw += sample_raw;
+		sum_squares_raw += (uint64_t)sample_raw * sample_raw;
+		uint32_t voltage_mv = ((uint32_t)sample_raw * 3300U) / 4095U;
 
     	int uart_tx_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "sample[%lu]: raw=%u, voltage=%lu mV\r\n",
-        (unsigned long)index, (unsigned int)adc_buffer[index], (unsigned long)voltage_mv);
+        (unsigned long)index, (unsigned int)sample_raw, (unsigned long)voltage_mv);
 
     	if ((uart_tx_length > 0) && (uart_tx_length < (int)sizeof(uart_tx_buffer))){
     		if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)uart_tx_length, 100U) != HAL_OK){
@@ -106,6 +124,28 @@ static void ProcessAdcHalf(uint32_t start_index, uint8_t half_id){
       }
     }
   }
+	uint32_t average_raw = sum_raw / ADC_HALF_LENGTH;
+	uint32_t peak_to_peak_raw = (uint32_t)max_raw - min_raw;
+
+	double mean_square = (double)sum_squares_raw / (double)ADC_HALF_LENGTH;
+
+	uint32_t rms_raw = (uint32_t)(sqrt(mean_square) + 0.5);
+
+	uint32_t min_mv = ((uint32_t)min_raw * 3300U) / 4095U;
+	uint32_t max_mv = ((uint32_t)max_raw * 3300U) / 4095U;
+	uint32_t average_mv = (average_raw * 3300U) / 4095U;
+	uint32_t peak_to_peak_mv = (peak_to_peak_raw * 3300U) / 4095U;
+	uint32_t rms_mv = (rms_raw * 3300U) / 4095U;
+
+	int metrics_length = snprintf( uart_tx_buffer, sizeof(uart_tx_buffer), "metrics: min=%lu mV, max=%lu mV, avg=%lu mV, " "p2p=%lu mV, rms=%lu mV\r\n",
+	    (unsigned long)min_mv, (unsigned long)max_mv, (unsigned long)average_mv, (unsigned long)peak_to_peak_mv, (unsigned long)rms_mv);
+
+	if ((metrics_length > 0) && (metrics_length < (int)sizeof(uart_tx_buffer))){
+	  if (HAL_UART_Transmit( &huart2, (uint8_t *)uart_tx_buffer, (uint16_t)metrics_length, 100U) != HAL_OK){
+	    Error_Handler();
+	  }
+	}
+
 	last_processing_time_ms = HAL_GetTick() - processing_start_ms;
 
 	if (last_processing_time_ms > max_processing_time_ms){
