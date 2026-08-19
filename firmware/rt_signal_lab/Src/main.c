@@ -20,6 +20,7 @@
 #include "main.h"
 #include "adc.h"
 #include "dac.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -49,6 +50,7 @@
 static uint32_t adc_raw = 0U;
 static uint32_t adc_mv = 0U;
 static char uart_tx_buffer[64];
+static uint32_t sample_time_ms = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -94,6 +96,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_DAC1_Init();
   MX_ADC1_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK){
     Error_Handler();
@@ -112,41 +115,38 @@ int main(void)
   if (HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 2048U) != HAL_OK){
     Error_Handler();
   }
+
+  if (HAL_ADC_Start(&hadc1) != HAL_OK){
+    Error_Handler();
+  }
+
+  if (HAL_TIM_Base_Start(&htim6) != HAL_OK){
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  if (HAL_ADC_Start(&hadc1) != HAL_OK){
-	    Error_Handler();
-	  }
-
-	  if (HAL_ADC_PollForConversion(&hadc1, 10U) != HAL_OK){
+	  if (HAL_ADC_PollForConversion(&hadc1, 200U) != HAL_OK){
 	    Error_Handler();
 	  }
 
 	  adc_raw = HAL_ADC_GetValue(&hadc1);
-
-	  if (HAL_ADC_Stop(&hadc1) != HAL_OK){
-	    Error_Handler();
-	  }
+	  sample_time_ms = HAL_GetTick();
 
 	  adc_mv = (adc_raw * 3300U) / 4095U;
 
-	  int uart_tx_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "ADC raw: %lu, voltage: %lu mV\r\n", (unsigned long)adc_raw, (unsigned long)adc_mv);
+	  int uart_tx_length = snprintf(uart_tx_buffer, sizeof(uart_tx_buffer), "t=%lu ms, ADC raw: %lu, voltage: %lu mV\r\n",
+	      (unsigned long)sample_time_ms, (unsigned long)adc_raw, (unsigned long)adc_mv);
 
-	  if (uart_tx_length > 0){
-	    if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)uart_tx_length, 100U) != HAL_OK){
+	  if ((uart_tx_length > 0) && (uart_tx_length < (int)sizeof(uart_tx_buffer))){
+	    if (HAL_UART_Transmit(&huart2, (uint8_t *)uart_tx_buffer, (uint16_t)uart_tx_length, 100U) != HAL_OK)
+	    {
 	      Error_Handler();
 	    }
 	  }
-	  else
-	  {
-	    Error_Handler();
-	  }
-
-	  HAL_Delay(500U);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
